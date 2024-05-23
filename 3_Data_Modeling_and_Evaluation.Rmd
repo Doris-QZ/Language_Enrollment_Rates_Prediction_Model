@@ -1,0 +1,637 @@
+## Data Modeling and Evaluation
+##### - for language enrollment rates prediction model
+  
+  
+###### Doris Chen
+###### 2024-05-17
+  
+***
+  
+```{r message=FALSE}
+# Load packages
+library(mgcv)
+library(tidyverse)
+library(caret)
+```
+
+We got two potential feature groups from "2_Data_Understanding.Rmd": 
+
+**Model_58 (for data since 1958):**
+Lan_UsPct ~ HEdu_Pct + Inc_Ratio + Pvt_Ratio + Intl_Stud_Pct +  Trade_Pct
+
+**Model_80 (for data since 1980):**
+Lan_UsPct ~ Eng_LesVw_Pop_UsPct + HEdu_Pct + Inc_Ratio + Pvt_Ratio + Intl_Stud_Pct + Trade_Pct
+
+
+```{r message = F}
+# Load the data (data was processed in "1_Data_Processing.Rmd" and "2_Data_Understanding.Rmd")
+all_features <- read_csv("Data/all_features.csv")
+summary(all_features)
+```
+From "Data Understanding_0417.Rmd", all percentage data in "all_features" were multiplied by 100 (meaning the numbers in those columns represent percentage points); and all ratio data were subtracted by 1 (so, the positive number means the ratio is greater than 1, while the negative number means the ratio is less than 1).
+
+The response variable "Lan_UsPct" follows a beta distribution, we will remove rows where Lan_UsPct = 0 from the data, because beta regression in "mgcv" package requires the response value between (0,1), but not exactly equal to 0 or 1.
+
+```{r}
+all_features <- all_features %>% 
+        filter(Lan_UsPct != 0) %>% 
+        select(-Lang_Enrol_Pct_avg3, -Lang_Enrol_Pct_avg4, -Lang_Enrol_Pct_avg5)
+        
+```
+
+### Partitioning the data
+```{r}
+# Split the data into 80% training and 20% testing set
+set.seed(123)
+index <- sample(nrow(all_features), floor(nrow(all_features)*0.8))
+
+training58 <- all_features[index, -grep("Eng_LesVw_Pop_UsPct", colnames(all_features))]
+testing58 <- all_features[-index, -grep("Eng_LesVw_Pop_UsPct", colnames(all_features))]
+
+```
+
+We will use historical data(rolling 3 - 5 years average) of the predictor variables to train models and evaluate model performance.
+
+### Model_58
+```{r}
+training58_3 <- training58[, c(3, grep("3", colnames(training58)))]
+training58_3 <- training58_3[complete.cases(training58_3), ]
+
+training58_4 <- training58[, c(3, grep("4", colnames(training58)))]
+training58_4 <- training58_4[complete.cases(training58_4), ]
+
+training58_5 <- training58[, c(3, grep("5", colnames(training58)))]
+training58_5 <- training58_5[complete.cases(training58_5), ]
+```
+
+1. Predictor variables with rolling **three** years average
+```{r}
+mod58_3 <- gam(Lan_UsPct ~ Lan_UsPct_avg3 + s(HEdu_Pct_avg3) + s(Inc_Ratio_avg3) + 
+               s(Pvt_Ratio_avg3) + s(Intl_Stud_Pct_avg3) + s(Trade_Pct_avg3), 
+               family = betar(link = "logit"), data = training58_3)
+
+summary(mod58_3)
+```
+
+All predictors are significant in the summary above. The Deviance explained is 98.8%. All of the edf of the smooth terms are much greater than 1, indicating that they should enter the model in a linear way.
+
+Let's check the plot to double confirm.
+```{r}
+par(mfrow = c(2, 3))
+plot.gam(mod58_3)
+```
+The plots above provide an evidence of the non-linear relationship between the smooth terms and the response.
+
+
+2. Predictor variables with rolling **four** years average
+
+```{r}
+mod58_4 <- gam(Lan_UsPct ~ Lan_UsPct_avg4 + s(HEdu_Pct_avg4) + s(Inc_Ratio_avg4) + 
+               s(Pvt_Ratio_avg4) + s(Intl_Stud_Pct_avg4) + s(Trade_Pct_avg4), 
+               family = betar(link = "logit"), data = training58_4)
+
+summary(mod58_4)
+```
+All predictors  are significant again, and the Deviance explained is 98.9%, 0.1% higher than the modeling with rolling three years average. All edf of the smooth terms are much greater than 1 again, indicating that the predictors should enter into the model in a non-linear manner.
+
+3. Predictor variables with rolling **five** years average
+
+```{r}
+mod58_5 <- gam(Lan_UsPct ~ Lan_UsPct_avg5 + s(HEdu_Pct_avg5) + s(Inc_Ratio_avg5) + 
+               s(Pvt_Ratio_avg5) + s(Intl_Stud_Pct_avg5) + s(Trade_Pct_avg5), 
+               family = betar(link = "logit"), data = training58_5)
+
+summary(mod58_5)
+```
+
+All predictors  are significant, and the Deviance explained is also 99.1%, and all edf are much greater than 1.
+
+**Cross Validation**
+
+We will perform 10-fold cross-validation to compare the Mean Absolute Error(MAE) of the three models.
+
+```{r}
+set.seed(223)
+folds <- createFolds(y = training58_3$Lan_UsPct, k = 10)
+
+err <- rep(0, 10)
+for (i in c(1:10)){
+        training = training58_3[-folds[[i]], ]
+        testing = training58_3[folds[[i]], ]
+        mod = gam(Lan_UsPct ~ Lan_UsPct_avg3 + s(HEdu_Pct_avg3) + s(Inc_Ratio_avg3) + 
+               s(Pvt_Ratio_avg3) + Intl_Stud_Pct_avg3 + s(Trade_Pct_avg3), 
+               family = betar(link = "logit"), data = training)
+        err[i] = mean(abs(predict(mod, newdata = testing, type = "response") - testing$Lan_UsPct))
+        
+}
+
+MAE58_3 <- mean(err)
+MAE58_3
+```
+
+```{r}
+set.seed(323)
+folds <- createFolds(y = training58_4$Lan_UsPct, k = 10)
+
+err <- rep(0, 10)
+for (i in c(1:10)){
+        training = training58_4[-folds[[i]], ]
+        testing = training58_4[folds[[i]], ]
+        mod = gam(Lan_UsPct ~ Lan_UsPct_avg4 + s(HEdu_Pct_avg4) + s(Inc_Ratio_avg4) + 
+               s(Pvt_Ratio_avg4) + s(Intl_Stud_Pct_avg4) + s(Trade_Pct_avg4), 
+               family = betar(link = "logit"), data = training)
+        err[i] = mean(abs(predict(mod, newdata = testing, type = "response") - testing$Lan_UsPct))
+        
+}
+
+MAE58_4 <- mean(err)
+MAE58_4
+```
+
+```{r}
+set.seed(423)
+folds <- createFolds(y = training58_5$Lan_UsPct, k = 10)
+
+err <- rep(0, 10)
+for (i in c(1:10)){
+        training = training58_5[-folds[[i]], ]
+        testing = training58_5[folds[[i]], ]
+        mod = gam(Lan_UsPct ~ Lan_UsPct_avg5 + s(HEdu_Pct_avg5) + s(Inc_Ratio_avg5) + 
+               s(Pvt_Ratio_avg5) + s(Intl_Stud_Pct_avg5) + s(Trade_Pct_avg5), 
+               family = betar(link = "logit"), data = training)
+        err[i] = mean(abs(predict(mod, newdata = testing, type = "response") - testing$Lan_UsPct))
+        
+}
+
+MAE58_5 <- mean(err)
+MAE58_5
+```
+
+```{r}
+tibble(Model = c("mod58_3", "mod58_4", "mod58_5"),
+       Deviance_Explained = round(c(summary(mod58_3)$dev.expl, summary(mod58_4)$dev.expl, summary(mod58_5)$dev.expl), 4),
+       CV_MAE = round(c(MAE58_3, MAE58_4, MAE58_5), 4),
+       AIC = c(AIC(mod58_3), AIC(mod58_4), AIC(mod58_5))
+)
+```
+
+All three metrics in the table above show that mod58_5(the model with rolling five years average predictors) perform the best: with the highest Deviance_Explained, lowest CV_MAE and AIC. 
+
+
+### Model_80
+
+```{r}
+set.seed(111)
+all_80 <- all_features[all_features$Year >= 1980, ]
+index80 <- sample(nrow(all_80), floor(nrow(all_80)*0.8))
+        
+training80 <- all_80[index80, ]
+testing80 <- all_80[-index80, ]
+```
+
+
+```{r}
+training80_3 <- training80[, c(1:3, grep("3", colnames(training80)))]
+training80_3 <- training80_3[complete.cases(training80_3), ]
+
+training80_4 <- training80[, c(1:3, grep("4", colnames(training80)))]
+training80_4 <- training80_4[complete.cases(training80_4), ]
+
+training80_5 <- training80[, c(1:3, grep("5", colnames(training80)))]
+training80_5 <- training80_5[complete.cases(training80_5), ]
+```
+
+1. Predictors with **three** years rolling average
+```{r}
+mod80_3 <- gam(Lan_UsPct ~ Lan_UsPct_avg3 + s(Eng_LesVw_Pop_UsPct_avg3) + s(HEdu_Pct_avg3) + s(Inc_Ratio_avg3) + 
+               s(Pvt_Ratio_avg3) + s(Intl_Stud_Pct_avg3) + s(Trade_Pct_avg3), 
+               family = betar(link = "logit"), data = training80_3)
+
+summary(mod80_3)
+```
+
+All predictors are significant, Deviance explained is 99.9%. All edf are much greater than 1.
+
+```{r}
+par(mfrow = c(2,3))
+plot.gam(mod80_3)
+```
+
+The plots above prove the non-linearity between the five smooth terms and the response.
+
+2. Predictors with rolling **four** years average
+```{r}
+mod80_4 <- gam(Lan_UsPct ~ Lan_UsPct_avg4 + s(Eng_LesVw_Pop_UsPct_avg4) + s(HEdu_Pct_avg4) + s(Inc_Ratio_avg4) + 
+               s(Pvt_Ratio_avg4) + s(Intl_Stud_Pct_avg4) + s(Trade_Pct_avg4), 
+               family = betar(link = "logit"), data = training80_4)
+
+summary(mod80_4)
+```
+All predictors are significant, Deviance explained 99.9%.
+
+3. Predictors with rolling **five** years average
+```{r}
+mod80_5 <- gam(Lan_UsPct ~ Lan_UsPct_avg5 + s(Eng_LesVw_Pop_UsPct_avg5) + s(HEdu_Pct_avg5) + s(Inc_Ratio_avg5) + 
+               s(Pvt_Ratio_avg5) + s(Intl_Stud_Pct_avg5) + s(Trade_Pct_avg5), 
+               family = betar(link = "logit"), data = training80_5)
+
+summary(mod80_5)
+```
+The Deviance explained is also 99.9% in this model.
+
+10-fold cross validation is run to compare the MAE of the three models.
+
+```{r}
+set.seed(523)
+folds <- createFolds(y = training80_3$Lan_UsPct, k = 10)
+
+err <- rep(0, 10)
+for (i in c(1:10)){
+        training = training80_3[-folds[[i]], ]
+        testing = training80_3[folds[[i]], ]
+        mod = gam(Lan_UsPct ~ Lan_UsPct_avg3 + s(Eng_LesVw_Pop_UsPct_avg3) + s(HEdu_Pct_avg3) + s(Inc_Ratio_avg3) + 
+               s(Pvt_Ratio_avg3) + s(Intl_Stud_Pct_avg3) + s(Trade_Pct_avg3), 
+               family = betar(link = "logit"), data = training)
+        err[i] = mean(abs(predict(mod, newdata = testing, type = "response") - testing$Lan_UsPct))
+        
+}
+
+MAE80_3 <- mean(err)
+MAE80_3
+```
+
+```{r}
+set.seed(623)
+folds <- createFolds(y = training80_4$Lan_UsPct, k = 10)
+
+err <- rep(0, 10)
+for (i in c(1:10)){
+        training = training80_4[-folds[[i]], ]
+        testing = training80_4[folds[[i]], ]
+        mod = gam(Lan_UsPct ~ Lan_UsPct_avg4 + s(Eng_LesVw_Pop_UsPct_avg4) + s(HEdu_Pct_avg4) + s(Inc_Ratio_avg4) + 
+               s(Pvt_Ratio_avg4) + s(Intl_Stud_Pct_avg4) + s(Trade_Pct_avg4), 
+               family = betar(link = "logit"), data = training)
+        err[i] = mean(abs(predict(mod, newdata = testing, type = "response") - testing$Lan_UsPct))
+        
+}
+
+MAE80_4 <- mean(err)
+MAE80_4
+```
+
+```{r}
+set.seed(723)
+folds <- createFolds(y = training80_5$Lan_UsPct, k = 10)
+
+err <- rep(0, 10)
+for (i in c(1:10)){
+        training = training80_5[-folds[[i]], ]
+        testing = training80_5[folds[[i]], ]
+        mod = gam(Lan_UsPct ~ Lan_UsPct_avg5 + s(Eng_LesVw_Pop_UsPct_avg5) + s(HEdu_Pct_avg5) + s(Inc_Ratio_avg5) + 
+               s(Pvt_Ratio_avg5) + s(Intl_Stud_Pct_avg5) + s(Trade_Pct_avg5), 
+               family = betar(link = "logit"), data = training)
+        err[i] = mean(abs(predict(mod, newdata = testing, type = "response") - testing$Lan_UsPct))
+        
+}
+
+MAE80_5 <- mean(err)
+MAE80_5
+```
+
+```{r}
+tibble(Model = c("mod80_3", "mod80_4", "mod80_5"),
+       Deviance_Explained = round(c(summary(mod80_3)$dev.expl, summary(mod80_4)$dev.expl, summary(mod80_5)$dev.expl), 5),
+       CV_MAE = round(c(MAE80_3, MAE80_4, MAE80_5), 5),
+       AIC = c(AIC(mod80_3), AIC(mod80_4), AIC(mod80_5))
+)
+```
+The metrics above shows that mod80_3 performed the worst compare to the other two models, while the winner between the latter is undetermined --- the Deviance_Explained favors mod80_5, but CV_MAE and AIC of mod80_4 are smaller than that of mod80_5.
+
+We will run these two model on the test set, and compare their mean absolute prediction errors.
+
+```{r}
+testing80 <- testing80[complete.cases(testing80), ]
+
+```
+
+```{r}
+MAPE80_4 <- mean(abs(predict(mod80_4, newdata = testing80, type = "response") - testing80$Lan_UsPct))
+MAPE80_5 <- mean(abs(predict(mod80_5, newdata = testing80, type = "response") - testing80$Lan_UsPct))
+
+cat("The MAPE of mod80_4 is", MAPE80_4, "\n")
+cat("The MAPE of mod80_5 is", MAPE80_5)
+
+```
+
+The MAPE of mod80_4 is smaller.
+
+Let's run mod58_5 on the test set to see it's MAPE.
+
+
+```{r}
+
+MAPE58_5 <- mean(abs(predict(mod58_5, newdata = testing80, type = "response") - testing80$Lan_UsPct))
+cat("The MAPE of model mod58_5 is", "", MAPE58_5)
+```
+The MAPE of mod58_5 is larger than mod80_4.
+
+
+### Goodness of Fit
+
+We will check the goodness of fit of model "mod80_4"
+
+**1. Observed Values vs. Fitted Values**
+
+```{r}
+ggplot(data = training80_4, aes(x = fitted(mod80_4), y = Lan_UsPct))+
+        geom_point()+
+        geom_abline(intercept = 0, slope = 1, col = "brown")+
+        labs(title = " Observed Values vs. Fitted Values", x = "Fitted Value", y = "Observed Value")+
+        theme_bw()
+```
+
+The Observed Values vs. Fitted Values plot follows the line x = y with small deviation.
+
+**2. Residuals vs. Fitted Values**  
+
+```{r}
+res_fit <- data.frame(fit = fitted(mod80_4), res = resid(mod80_4))
+
+ggplot(res_fit , aes(fit, res)) +
+        geom_point()+
+        geom_hline(yintercept = 0, col = "brown")+
+        theme_bw()+
+        labs(title = "Residuals vs. Fitted Values", x = "Fitted Value", y = "Residuals")
+        
+```
+
+The plot spreads evenly on both sides of the brown line y = 0.
+
+**3. Quantile of residuals**
+```{r}
+quantile(resid(mod80_4))
+```
+
+The quantile of residuals gives us more detailed information about how the residuals are distributed, providing evidence of the good fit of the model:
+
+* The minimum and maximum are about the same in absolute value, so do the first and third quartile values. 
+* The median value is close to 0.  
+* The minimum and maximum are less than 3 in absolute value. 
+
+All these metrics together provide evidence of the good fit of the model. **So, we choose mod80_4 as our final model for further analysis.**
+
+### Interpret the model
+
+```{r}
+summary(mod80_4)
+```
+
+```{r}
+p_b0 <- round(exp(coef(mod80_4)[[1]]) / (1 + exp(coef(mod80_4)[[1]])), 3)
+p_b0
+```
+
+The average percentage point of students enrolling in a foreign language course (6 Asian languages in our dataset) in US colleges is about 0.017, meaning about 17 students in every 100,000 college students will enroll in a foreign language course when all other predictors are equal to zero.
+
+```{r}
+p_b1 <- round(exp(coef(mod80_4)[[1]] + coef(mod80_4)[[2]]) / (1 + exp(coef(mod80_4)[[1]] + coef(mod80_4)[[2]])), 3)
+p_b1
+p_b1 - p_b0
+```
+
+A one percentage point increase in 'Lan_UsPct_avg4' (the language course enrollment over total US college enrollment, rolling four-year average), with all other predictors held constant, increases the percentage point of students enrolling in a foreign language course in US colleges by 0.923. This means about 923 more students in every 100,000 college students will enroll in a foreign language course when the rolling four-year average of language course enrollment increases by 1%, with all other predictors held constant.
+
+```{r}
+plot(mod80_4, select = 1, shade = T)
+abline(h = 0, lty = "dashed")
+```
+
+The plot shows that the effect of **'Eng_LesVw_Pop_UsPct_avg4'** (percentage of the population whose English proficiency is less than 'very well' in a certain language group over the total US population, rolling four-year average) on the linear predictor is mostly negative (below zero). This suggests that a higher percentage of the population in a language group speaking English less than 'very well' corresponds to a lower log-odds of success (fewer enrollments in that language course). Specifically, when the value of **'Eng_LesVw_Pop_UsPct_avg4'** is above 0.15, the effect decreases slowly. This indicates that as the percentage of the population in a language group with limited English proficiency increases, the log-odds of success decrease, but the decline is gradual. Between 0.2 and 0.38 on the x-axis, the effect remains relatively constant, indicating a plateau. This suggests that in this range, changes in the percentage of the population with limited English proficiency have a fairly limited impact on the log-odds of success.
+
+
+```{r}
+plot(mod80_4, select = 2, shade = T)
+abline(h = 0, lty = "dashed")
+```
+
+The "HEdu_Pct_avg4" plot is wigglier than the previous one ('Eng_LesVw_Pop_UsPct_avg4' plot). It's interesting that the effect of **'HEdu_Pct_avg4'**(higher education percentage -- the percentage of 25 years and older in a language group who got Bachelor's degree or higher, rolling four-year average) on the linear predictor is negative in the middle, but positive on both sides, which means there will be more enrollments in a certain language course when the higher education percentage of that language group is very low (< 27%) or fairly high (> 61%). However, the trend in both sides of the curve is different: the increasement slows down when the value of 'HEdu_Pct_avg4' moves beyond 70%, but looks like still going up; while on the other side, there is a peak at HEdu_Pct_avg4 = 20.5, and the predicted value declines rapidly when the value of 'HEdu_Pct_avg4' moves below this point. The wider band of confidence interval on both sides indicate that more uncertainty exists on those ranges.
+
+
+```{r}
+plot(mod80_4, select = 3, shade = T)
+abline(h = 0, lty = "dashed")
+```
+
+The "Inc_Ratio_avg4" plot looks a bit similar to the "HEdu_Pct_avg4" plot but in different direction. This time, the effect of **'Inc_Ratio_avg4'** (median income of the language group over the corresponding median income in US, rolling four-year average) on the linear predictor is positive in the middle, but negative on both sides. In addition, the effect size in this plot is larger comparing to the previous plot: the range of y value in "Inc_Ratio_avg4" plot is about -2.8 ~ 1.8, while it is about -1 ~ 1.9 in "HEdu_Pct_avg4" plot.
+
+
+```{r}
+plot(mod80_4, select = 4, shade = T)
+abline(h = 0, lty = "dashed")
+```
+
+The "Pvt_Ratio_avg4" plot shows a slow upward trend in general. The effect of variable **'Pvt_Ratio_avg4'**(the poverty rate of the language group over the poverty rate in US, rolling four-year average) on the linear predictor is positive when the value is close to and above 0, meaning the higher the poverty ratio of a language group, the more enrollments in that language.
+
+
+```{r}
+plot(mod80_4, select = 5, shade = T)
+abline(h = 0, lty = "dashed")
+```
+
+The "Intl_Stud_Pct_avg4" plot shows a slow downward trend in general. The effect of **'Intl_Stud_Pct_avg4'**(international students from the language group country over the total international students in US, rolling four-year average) on the linear predictor is mostly negative (when Intl_Stud_Pct_avg4 > 8%), meaning the more international students from a certain language group, the fewer enrollments in that language courses. It could be because students in college have more access to language tutors when there are more international students from countries speaking the certain language. The curve shows an upward trend when the value of Intl_Stud_Pct_avg4 exceeds 29%, but due to data limitations, we are unsure if the effect will turn positive at some point. The effect size is fairly small in this plot, roughly ranging from -1 ~ 0.8. 
+
+
+```{r}
+plot(mod80_4, select = 6, shade = T)
+abline(h = 0, lty = "dashed")
+```
+
+The "Trade_Pct_avg4" plot shows the largest effect size comparing to the last five plots, the value on y-axis is ranging from -3 ~ 4, and mostly above 0, indicating a positive effect on the linear predictor. It shows an upward trend in general, especially when the value of **'Trade_Pct_avg4'**(the percentage of foreign trade with the language group country over the total foreign trade in US, rolling four-year average) is greater than 6%, meaning the more international trade with a language group country, the more enrollments in that language course.
+
+**In summary:** 
+* The effect of 'Eng_LesVw_Pop_UsPct_avg4' on the linear predictor is mostly negative, but the effect size is fairly small;
+* The effect of ‘HEdu_Pct_avg4’ is negative in the middle, but positive on both sides, the effect size is ranging from -1 to 1.9;
+* The effect of ‘Inc_Ratio_avg4’ is opposite to ‘HEdu_Pct_avg4’, positive in the middle but negative on both sides, with a larger effect size, -2.8 to 1.8;
+* The effect of ‘Pvt_Ratio_avg4' is positive when the value is close to and above 0, but the effect size is relatively small;
+* The effect of ‘Intl_Stud_Pct_avg4' shows a slow downward trend, and mostly negative, with a small effect size;
+* The effect of ‘Trade_Pct_avg4’ shows an upward trend, and is mostly positive with the largest effect size comparing to the other five predictors.
+
+
+### Model-based Predictions for Partial Effects in Beta Regression
+
+We will perform model-based predictions to further explore the partial effects of the top two predictors -- 'Inc_Ratio_avg4' and 'Trade_Pct_avg4' -- with the largest effect sizes, using data from 'all_80' table(all data with Year >= 1980).
+
+```{r}
+all80_4 <- all_80[, c(1:3, grep("4", colnames(all_80)))]
+all80_4 <- all80_4[complete.cases(all80_4),]
+nrow(all80_4)
+```
+
+
+```{r}
+# Create a new data frame with Inc_Ratio_avg4 ranging from the minimum to maximum value of the original data in table 'training80_4'. And keep all other predictors at their average value from the original data
+
+inc_new <- data.frame(
+                      Inc_Ratio_avg4 = round(seq(min(all80_4$Inc_Ratio_avg4), max(all80_4$Inc_Ratio_avg4), length.out = 228), 3),
+                      Lan_UsPct_avg4 = rep(mean(all80_4$Lan_UsPct_avg4), 228),
+                      Eng_LesVw_Pop_UsPct_avg4 = rep(mean(all80_4$Eng_LesVw_Pop_UsPct_avg4), 228),
+                      HEdu_Pct_avg4 = rep(mean(all80_4$HEdu_Pct_avg4), 228),
+                      Pvt_Ratio_avg4 = rep(mean(all80_4$Pvt_Ratio_avg4), 228),
+                      Intl_Stud_Pct_avg4 = rep(mean(all80_4$Intl_Stud_Pct_avg4), 228),
+                      Trade_Pct_avg4 = rep(mean(all80_4$Trade_Pct_avg4), 228)
+                      )
+
+```
+
+```{r}
+# Make prediction on the new data
+pred_inc <- predict(mod80_4, newdata = inc_new, type = "response", se.fit = T)
+
+# Extract predicted values and the standard errors
+inc_new$se <- pred_inc$se.fit
+inc_new$pred_value <- pred_inc$fit
+
+# Calculate the confidence intervals
+inc_new$CI_lower <- inc_new$pred_value - 1.96 * inc_new$se
+inc_new$CI_upper <- inc_new$pred_value + 1.96 * inc_new$se
+```
+
+
+```{r}
+# Check the partial effect of predictor 'Inc_Ratio_avg4' on the predicted value
+ggplot(data = inc_new, aes(x = Inc_Ratio_avg4, y = pred_value))+
+        geom_line(col = "brown", lwd = 2)+
+        geom_hline(yintercept = median(inc_new$pred_value), lty = "dashed")+
+        geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper), alpha = 0.2)+
+        labs(title = "Partial effect of 'Inc_Ratio_avg4' on the predicted value",
+             x = "Inc_Ratio_avg4", y = "Predicted Value")+
+        theme_classic()
+```
+
+```{r}
+max(inc_new$pred_value)
+inc_new$Inc_Ratio_avg4[which.max(inc_new$pred_value)]
+```
+
+As we can see from the plot above, the predicted value increases when 'Inc_Ratio_avg4' moves from negative to 0.2 and from 0.3 to 0.64. It declines when 'Inc_Ratio_avg4' moves from 0.2 to 0.3 and above 0.64.
+
+There is a very obvious peak in the plot where 'Inc_Ratio_avg4' is about 0.64. On both sides of the peak, the predicted value increases and decreases most dramatically.
+
+The dashed line in the plot indicates the median predicted value, and both sides of the curve are below this dashed line. This suggests that a low income ratio (below 0.15) or a very high income ratio (above 0.8) of a language group would lead to fewer enrollments in that language's courses.
+
+**Note that**, we subtracted the income ratio from 1 during data processing. Let's add it back here for better understanding:
+
+* "below 0.15" means the median income of a language group is less than 1.15 times the median income in the US (i.e., the income ratio is below 1.15). The lower the income ratio, the smaller the predicted value.
+* "above 0.8" means the median income of a language group is more than 1.8 times the median income in the US (i.e., the income ratio is above 1.8). The higher the income ratio, the smaller the predicted value. Although the decline moderates towards the end of the plot, data limitations prevent us from determining the trend if the predictor exceeds the maximum value.
+
+
+```{r}
+# Create a data frame with Trade_Pct_avg4 ranging from the minimum to maximum value of the original data in table 'all80_4'. And keep all other predictors at their average value from the original data
+
+trd_new <- inc_new[, -c(1, 8:11)]
+trd_new <- trd_new %>% 
+        mutate(Inc_Ratio_avg4 = rep(mean(all80_4$Inc_Ratio_avg4), 228),
+               Trade_Pct_avg4 = round(seq(min(all80_4$Trade_Pct_avg4), max(all80_4$Trade_Pct_avg4), length.out = 228), 3))
+
+```
+
+```{r}
+# Make prediction on the new data
+pred_trd <- predict(mod80_4, newdata = trd_new, type = "response", se.fit = T)
+
+# Extract predicted values and the standard errors
+trd_new$se <- pred_trd$se.fit
+trd_new$pred_value <- pred_trd$fit
+
+# Calculate the confidence intervals
+trd_new$CI_lower <- trd_new$pred_value - 1.96 * trd_new$se
+trd_new$CI_upper <- trd_new$pred_value + 1.96 * trd_new$se
+```
+
+
+```{r}
+# Check the partial effect of predictor 'Trade_Pct_avg4' on the predicted value
+ggplot(data = trd_new, aes(x = Trade_Pct_avg4, y = pred_value))+
+        geom_line(col = "brown", lwd = 2)+
+        geom_hline(yintercept = median(trd_new$pred_value), lty = "dashed")+
+        geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper), alpha = 0.2)+
+        labs(title = "Partial effect of 'Trade_Pct_avg4' on the predicted value",
+             x = "Trade_Pct_avg4", y = "Predicted Value")+
+        theme_classic()
+```
+
+The plot shows an upward trend, indicating a positive correlation between the predictor 'Trade_Pct_avg4' and the predicted value, especially when 'Trade_Pct_avg4' is greater than 5%. The wide confidence interval above the median value (dashed line) suggests some uncertainty in this range. Nevertheless, the trend indicates that a higher trade share with a certain language group country is associated with more enrollments in that language course in college.
+
+
+### Conclusion
+
+In this project, we built two sets of beta regression using Generalized Additive Model (GAM) to predict the percentage of language course enrollment in US colleges: 
+
+  * One for all data since 1958, using ‘HEdu_Pct’, ‘Inc_Ratio’, ‘Pvt_Ratio’, ‘Intl_Stud_Pct’,  ‘Trade_Pct’ as predictors;
+  * The other for data since 1980, using ‘Eng_LesVw_Pop_UsPct’, ‘HEdu_Pct’, ‘Inc_Ratio’, ‘Pvt_Ratio’, ‘Intl_Stud_Pct’,  ‘Trade_Pct’ as predictors.
+
+The only **difference** between the two sets of predictors is that the second one include the feature **‘Eng_LesVw_Pop_UsPct’**(percentage of the population whose English proficiency is less than 'very well' in a certain language group over the total US population, rolling four-year average) which **only available after the year 1980 in US Census data**.
+
+For each set of the models, we compared the model performance using rolling three-year, four-year, and five-year average of data. It turns out that the **rolling four-year average works the best**.
+
+After evaluated the **Deviance_Explained, CV_MAE**(mean absolute error of 10-fold cross validation), **AIC**, and **MAPE**(mean absolute prediction error on test set), we chose the **final model “mod80_4”**:
+
+*Lan_UsPct ~ Lan_UsPct_avg4 + s(Eng_LesVw_Pop_UsPct_avg4) + s(HEdu_Pct_avg4) + s(Inc_Ratio_avg4) + s(Pvt_Ratio_avg4) + s(Intl_Stud_Pct_avg4) + s(Trade_Pct_avg4)*
+
+```{r}
+MAPE80_4 / mean(testing80$Lan_UsPct)
+```
+
+The model's mean absolute prediction error rate (**MAPER**) on test set is 4.68% (MAPE / the average of the observed value).
+
+Here is a tibble of all the metrics we just mentioned:
+```{r}
+tibble(Model = "mod80_4",
+       Deviance_Explained = "99.9%",
+       CV_MAE = round(MAE80_4,5),
+       AIC =AIC(mod80_4),
+       MAPE = round(MAPE80_4, 5),
+       MAPER = "4.68%")
+```
+
+The **'Observed Values vs. Fitted Values' and 'Residuals vs. Fitted Values' plots, and the Quantile of Residuals appear satisfactory**. These metrics collectively indicate that we have a **reasonably well-fitted model**.
+
+A few **highlights of our finding** from the model:
+
+1. Most factors have a non-linear relationship with enrollment rates, and using a rolling four-year average of data improved the prediction;
+
+2. The predictors ‘Trade_Pct_avg4' and ‘Inc_Ratio_avg4’ show the top-2 largest effect size among all the smooth terms:
+
+  * The effect of 'Trade_Pct_avg4' on the linear predictor shows an upward trend and is mostly positive, with the largest effect size compared to the other five predictors. The wide confidence interval above the median value suggests some uncertainty in this range. Nevertheless, the trend indicates that a higher trade share with a certain language group country is associated with more enrollments in that language course in college. This supports Wee’s Linguistic Instrumentalism theory(Wee 2003), which suggests that the more useful a language is, the more value it will have for its speakers, and the more vigorous the language will be in the community.
+
+  * The effect of ‘Inc_Ratio_avg4’ on the linear predictor is quite wiggly, with a very obvious peak when the rolling four-year average of median income ratio is about 1.64. The predicted enrollment rate increases and decreases most dramatically as ‘Inc_Ratio_avg4’ moves below or above this point. Both sides of the curve fall below the median predicted value, indicating lower predicted enrollment rate at both ends.
+
+3. The effect of both 'Eng_LesVw_Pop_UsPct_avg4' and ‘Intl_Stud_Pct_avg4' on the linear predictor is mostly negative and decreases slowly. This suggests that a higher percentage of population in a language group speaks English less than ‘very well’ or a larger number of international students from that language group, is associated with lower enrollment in that language course. It could be because college students have more access to language tutors when there are more people speaking that language —- either people with limited English proficiency or international students from countries speaking that language. However, their effect size are fairly limited;
+
+4. The effect of ‘HEdu_Pct_avg4’ is negative in the middle, positive on both sides; The effect of ‘Pvt_Ratio_avg4' shows a slow upward trend in general, and turns to positive when the value is close to and above 0, which is against our intuition, but the confidence interval is large and the effect size is relatively small.
+
+
+### Deficiencies and Future Research
+
+We have collected and processed a lot of historical data from multiple sources, built several models, and eventually chose one (mod80_4) that performs reasonably well for this project. However, there are still some deficiencies and areas for improvement in future research.
+
+**Firstly**, the biggest challenge in this project is data limitation: 
+
+* As we are using historical data to predict language course enrollment rates in U.S. colleges, we need historical language course enrollment data as the response variable in our model. This data is available on the MLA website but covers only 26 censuses from 1958 to 2021; 
+
+* For demographic data from the U.S. Census (used as predictors), we were able to obtain annual estimates from the American Community Survey for the years 2010 to 2021. However, prior to 2010, data is only available every 10 years from the Decennial Census. Additionally, variations in the questions used across Decennial Censuses introduce more missing data in our project. 
+
+While splines were used to interpolate these missing data, the final dataset remains relatively small. This might restrict the generalizability of our findings.
+
+**Secondly**, the predictor variables we based our selection on, using language vitality assessment frameworks, are limited in scope. Several potentially important factors were not included in our models:
+
+* Political or cultural factors: For example, the relationship between the US and other countries, or the influence of pop cultures, especially through social medial;
+
+* Technology boom in the last two decades: This includes online learning resources, translation software, and AI large language models;
+
+* Worldwide language vitality: For instance, the global population speaking a certain language, or the economic power of countries associated with those languages.
+
+**Thirdly**, with the enrollment data of only six Asian language courses included, the generalizability of our findings to other languages remains uncertain. We cannot determine if this model can be broadly applied to predict enrollment in other language courses.
+
+**Future research** involving a **wider variety of languages**, such as Spanish, French, and Hebrew, and **expanding the scope of predictors** by incorporating factors like global language population, the GDP of countries associated with the languages, and sentiment analysis of mainstream newspapers, would help us build a more generalizable model.
+

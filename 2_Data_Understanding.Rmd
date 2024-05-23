@@ -1,0 +1,337 @@
+## Data Understanding
+##### - for language enrollment rates prediction model
+  
+  
+###### Doris Chen
+###### 2024-04-19
+  
+***
+  
+```{r message = F}
+# Load packages
+library(cowplot)
+library(tidyverse)
+library(corrplot)
+library(leaps)
+```
+
+Data processing please check "1_Data_Processing.Rmd"
+
+```{r message = F}
+# Load the data
+all_data <- read_csv("Data/all_data.csv")
+totl_lan <- read_csv("Data/All_Lang_Enrol.csv")
+college_enrl <- read_csv("Data/UsCollege_Enrol.csv")
+
+summary(all_data)
+```
+
+It is a time series data set, spanning from 1958 to 2021. We will take a look at the trend of language enrollment across the entire data frame first.
+
+```{r fig.height=8}
+# Check the trend of each language course enrollments 
+LanEnr1 <- ggplot(data = totl_lan, aes(x = factor(Year), y = Totl_Lan, group = 1))+
+                 geom_point()+
+                 geom_line()+
+                 theme_classic()+
+                 theme(axis.text.x = element_text(angle = 90))+
+                 labs(title = "Total Foreign Language Courses Enrollments in US Institution", x = "Year", y = "Enrollment")
+
+LanEnr2 <- ggplot(data = all_data, aes(x = as.factor(Year), y = Lang_Enrol, group = Language, col = Language))+
+                geom_point()+
+                geom_line()+
+                theme_classic()+
+                theme(axis.text.x = element_text(angle = 90))+
+                theme(legend.position = 'none')+
+                labs(title = "Asian Language Courses Enrollments", x = "Year", y = "Enrollment")
+
+LanEnr3 <- ggplot(data = all_data, aes(x = as.factor(Year), y = Lang_Enrol_Pct, group = Language, col = Language))+
+                geom_point()+
+                geom_line()+
+                theme_classic()+
+                theme(axis.text.x = element_text(angle = 90))+
+                scale_y_continuous(labels = scales::percent)+
+                theme(legend.position = "bottom")+
+                theme(legend.title = element_blank())+
+                guides(col = guide_legend(nrow = 1))+
+                labs(title = "Asian Language Courses Enrollments Percentage", x = "Year", y = "Enrollment Percentage")
+
+plot_grid(LanEnr1, LanEnr2, LanEnr3, align = "v", nrow = 3, rel_heights = c(0.3, 0.3, 0.4))
+```
+
+As can be seen from the plots above, the enrollments in Asian language courses roughly follow the general trend of total language enrollments with some deviations: Japanese enrollments increased rapidly in the 1980s and remain the highest among the six languages; Korean enrollments have risen slowly and steadily, even in the last decade when total language enrollments are declining; Filipino, Vietnamese, and Hindi have lower enrollments compared to the other three languages, and not showing the trend clearly enough in the plot. Let's check the three languages alone.
+
+```{r}
+ggplot(data = all_data[all_data$Language %in% c("Vietnamese", "Filipino", "Hindi"), ], 
+       aes(x = as.factor(Year), y = Lang_Enrol_Pct, group = Language, col = Language))+
+        geom_point()+
+        geom_line()+
+        theme_classic()+
+        theme(axis.text.x = element_text(angle = 90))+
+        scale_y_continuous(labels = scales::percent)+
+        theme(legend.position = "bottom")+
+        theme(legend.title = element_blank())+
+        guides(col = guide_legend(nrow = 1))+
+        labs(x = "Year", y = "Enrollment Percentage")
+```
+The percentages of these three language course enrollments over the total language courses enrollments are going up, similar trend as the other three Asian languages.
+
+Now we will compare the language courses enrollments with the total college enrollments in US.
+
+```{r}
+totl_lan <- left_join(totl_lan, college_enrl, by = "Year")
+totl_lan <- totl_lan %>% 
+         mutate(ToLan_UsPct = round(Totl_Lan/Total_Stud, 4))
+
+```
+
+
+```{r fig.height = 8}
+lanPct1 <- ggplot(data = totl_lan, aes(x = factor(Year), y = ToLan_UsPct, group = 1, label = scales::percent(ToLan_UsPct)))+
+                geom_point()+
+                geom_line()+
+                scale_y_continuous(labels = scales::percent)+
+                theme_classic()+
+                geom_text(vjust = -0.6)+
+                labs(title = "All foreign language courses enrollments over total college enrollments in US",
+                     x = "Year", y = "Percentage")
+                
+lanPct2 <- ggplot(data = all_data, aes(x = factor(Year), y = Lan_UsPct, group = Language, col = Language))+
+                geom_point()+
+                geom_line()+
+                scale_y_continuous(labels = scales::percent)+
+                theme_classic()+
+                theme(axis.text.x = element_text(angle = 90))+
+                theme(legend.position = "bottom", legend.title = element_blank())+
+                guides(col = guide_legend(nrow = 1))+
+                labs(title = "Each language courses enrollments over total college enrollments in US",
+                     x = "Year", y = "Percentage")
+
+plot_grid(lanPct1, lanPct2, align = "v", nrow = 2)
+
+```
+The trends are almost reverse when comparing with the total students in US colleges.The percentage of total foreign language course enrollment over total students in US colleges is going down since 1965 while the percentage of each Asian language enrollments are going up, especially Japanese in 1980s and Chinese in early 2000. Korean enrollment percentage is going up steadily since 1980s.
+
+```{r}
+# Check the distribution of "Lan_UsPct" 
+ggplot(data = all_data, aes(x = Lan_UsPct))+
+        geom_histogram(aes(y = after_stat(density)), bins = 100, col = "white", fill = "lightblue")+
+        geom_density()+
+        theme_classic()
+
+```
+The variable "Lan_UsPct" is percentage data with the range of (0, 1), which should follow a beta distribution.
+
+The histogram above looks like a beta distribution with very small $\alpha$ and very large $\beta$. The imperfect shape might be due to the small size of the data we have.
+
+
+```{r}
+# Subset potential features for model building
+all_ratios <- all_data[, c(1, 2, 24, 25, grep("Pct|Ratio", colnames(all_data)))]
+
+# Multiply all percentage data with 100
+for (i in grep("Pct", colnames(all_ratios))){
+        all_ratios[, i] = all_ratios[, i] * 100
+}
+
+# All ratio data subtract with 1
+for (i in grep("Ratio", colnames(all_ratios))){
+        all_ratios[, i] = all_ratios[, i] - 1
+}
+```
+
+```{r}
+# Randomly extract 80% of the data for further data exploration and feature selection.
+set.seed(123)
+exploring <- all_ratios[sample(floor(nrow(all_ratios)*0.8)), ]
+```
+
+
+Now, let's check the correlation among the variables. First, Chi-square test of independence between the two categorical political variables under this hypothesis: H_0: The two variables are independent; H_1: the two variables are dependent; alpha = 0.05
+
+```{r}
+chisq.test(exploring$Presidency, exploring$Party_Gov)
+```
+The p-value is very small, we reject the H_0, meaning the two variables are related to each other.
+
+```{r}
+g1 <- ggplot(data = exploring, aes(x = Presidency, y = Lan_UsPct))+
+                geom_boxplot()
+
+g2 <- ggplot(data = exploring, aes(x = Party_Gov, y = Lan_UsPct))+
+                geom_boxplot()
+
+
+plot_grid(g1, g2, nrow = 1)
+```
+
+The plots do not look like there are much difference between the groups with respect to the percentage of language course enrollment. We will run anova test to double confirm:
+H_0: There are no differences across groups; 
+H_1: There are some difference across groups; alpha = 0.05.
+
+```{r}
+anova(aov(Lan_UsPct ~ Presidency, data = exploring))
+anova(aov(Lan_UsPct ~ Party_Gov, data = exploring))
+```
+
+All the p-values are much greater than 0.05. We fail to reject H_0, meaning there are no differences across groups. We will exclude the two political variables from the model design.
+
+We'll move on to check the correlation coefficient among all possible pairs of the numeric data related to percentage or ratio.
+
+```{r}
+corrplot(cor(exploring[, grep("Pct|Ratio", colnames(exploring))], use = "pairwise.complete.obs"), method = "number")
+
+```
+
+From the corrplot above,we can see that a high correlation coefficient(0.99) between the two potential response variable Lan_UsPct and Lang_Enrol_Pct. Five variables(Eng_LesVw_Pop_UsPct, HEdu_Ratio, Pvt_Pct, Intl_Stud_Pct, and Trade-Ratio) have correlation over 0.2 with both Lan_UsPct and Lang_Enrol_Pct. 
+
+The correlation between most variables are below 0.8, except for between Pop_UsPct, HEdu_UsPct, Lang_Pop_UsPct and Eng_LesVw_Pop_UsPct.
+
+Note that, this correlation is between data in the same year, and the prediction model we are going to build will be base on historical data.
+
+We will run linear models to select the best feature combinations. Because the availability of three population data (Pop_UsPct, Lang_Pop_UsPct and Eng_LesVw_Pop_UsPct) are different (Pop_UsPct  1958-2021, Lang_Pop_UsPct 1970-2021 and Eng_LesVw_Pop_UsPct 1980-2021), and since these three variables are highly correlated, we will combine them with other predictors separately. 
+
+```{r}
+rs58 <- summary(regsubsets(Lan_UsPct ~ Pop_UsPct + HEdu_Pct + Inc_Ratio + Pvt_Pct
+                           + Pvt_Ratio + Intl_Stud_Pct + Trade_Pct, data = exploring))
+
+AIC58 = 2 * (2:8) + nrow(exploring) * log(rs58$rss/nrow(exploring))
+BIC58 = log(nrow(exploring)) * (2:8) + nrow(exploring) * log(rs58$rss/nrow(exploring))
+
+par(mfrow = c(1, 3))
+plot(AIC58 ~ I(1:7), xlab = "Number of Predictors", ylab = "AIC")
+plot(BIC58 ~ I(1:7), xlab = "Number of Predictors", ylab = "BIC")
+plot(1:7, rs58$adjr2, xlab = "Number of Predictors", ylab = "Adjusted R-Squared")
+```
+
+Based on the plots above, the lowest value of AIC and BIC, and the highest value of adjusted R-square value are all landed in five predictors. 
+
+```{r}
+rs58$which
+rs58$adjr2
+```
+
+```{r}
+summary(lm(Lan_UsPct ~ HEdu_Pct + Inc_Ratio + Pvt_Ratio + Intl_Stud_Pct + Trade_Pct, data = exploring))
+```
+
+The five predictors are significant in the summary above, the Adjusted R-squared is 0.7115. 
+
+So, here is our first feature group: Lan_UsPct ~ HEdu_Pct + Inc_Ratio + Pvt_Ratio + Intl_Stud_Pct +  Trade_Pct
+
+Let's do the same for another two data combinations.
+
+```{r}
+rs70 <- summary(regsubsets(Lan_UsPct ~ Lang_Pop_UsPct  + HEdu_Pct + Inc_Ratio + Pvt_Pct
+                           + Pvt_Ratio + Intl_Stud_Pct + Trade_Pct, data = exploring[exploring$Year >= 1970, ]))
+
+n <- nrow(exploring[exploring$Year >= 1970, ])
+AIC70 = 2 * (2:8) + n * log(rs70$rss / n)
+BIC70 = log(n) * (2:8) + n * log(rs70$rss / n)
+
+par(mfrow = c(1, 3))
+plot(AIC70 ~ I(1:7), xlab = "Number of Predictors", ylab = "AIC")
+plot(BIC70 ~ I(1:7), xlab = "Number of Predictors", ylab = "BIC")
+plot(1:7, rs70$adjr2, xlab = "Number of Predictors", ylab = "Adjusted R-Squared")
+```
+
+The lowest value of AIC and BIC landed in different number of predictors(AIC in 6, BIC in 5), while the highest value of Adjusted R-squared landed at the number of 6 predictors.
+
+```{r}
+rs70$which
+```
+The matrix above shows that "Lang_Pop_UsPct" was not included in the first five models until the last two models, which indicates the insignificance of the variable.
+
+```{r}
+summary(lm(Lan_UsPct ~ Lang_Pop_UsPct  + HEdu_Pct + Inc_Ratio 
+                           + Pvt_Ratio + Intl_Stud_Pct + Trade_Pct, data = all_ratios[all_ratios$Year >= 1970, ]))
+```
+The summary above confirms our conclusion. We will exclude this feature combination.
+
+```{r}
+rs80 <- summary(regsubsets(Lan_UsPct ~ Eng_LesVw_Pop_UsPct + HEdu_Pct + Inc_Ratio + Pvt_Pct
+                           + Pvt_Ratio + Intl_Stud_Pct + Trade_Pct, data = exploring[exploring$Year >= 1980, ]))
+
+n <- nrow(exploring[exploring$Year >= 1980, ])
+AIC80 <- 2 * (2:8) + n * log(rs80$rss / n)
+BIC80 <- log(n) * (2:8) + n  * log(rs80$rss / n)
+
+
+par(mfrow = c(1, 3))
+plot(AIC80 ~ I(1:7), xlab = "Number of Predictors", ylab = "AIC")
+plot(BIC80 ~ I(1:7), xlab = "Number of Predictors", ylab = "BIC")
+plot(1:7, rs80$adjr2, xlab = "Number of Predictors", ylab = "Adjusted R-Squared")
+
+```
+All three plots indicates that the model with six predictors is the best.
+
+```{r}
+rs80$which
+```
+
+```{r}
+summary(lm(Lan_UsPct ~ Eng_LesVw_Pop_UsPct + HEdu_Pct + Inc_Ratio
+                           + Pvt_Ratio + Intl_Stud_Pct + Trade_Pct, data = exploring[exploring$Year >= 1980, ]))
+
+```
+
+All six predictors are significant in the summary above, and the Adjusted R-squared in this model is 0.771, higher than the first linear model. We will choose the feature group with six predictors.
+
+In summary, we got two potential feature groups: 
+
+**Model_58 (for all data since 1958):**
+Lan_UsPct ~ HEdu_Pct + Inc_Ratio + Pvt_Ratio + Intl_Stud_Pct +  Trade_Pct
+
+**Model_80 (for data since 1980):**
+Lan_UsPct ~ Eng_LesVw_Pop_UsPct + HEdu_Pct + Inc_Ratio + Pvt_Ratio + Intl_Stud_Pct + Trade_Pct
+
+### Feature extraction
+We will add the rolling average value of prior 3-5 years of all predictors;
+
+```{r}
+# Extract required features 
+all_features <- all_ratios %>% 
+        select(Year, Language, Lan_UsPct, Lang_Enrol_Pct, Eng_LesVw_Pop_UsPct, HEdu_Pct, 
+               Inc_Ratio, Pvt_Ratio, Intl_Stud_Pct, Trade_Pct)
+
+```
+
+```{r}
+# Add features of rolling average of 3-5 years into the data frame
+col_list <- list() 
+l = 1        
+for (i in c(3:10)){
+     feature_list = list()  
+     k = 1
+     for (lan in unique(all_features$Language)){
+          LanGr <- all_features[all_features$Language == lan, ]
+          
+          for (j in c(3:5)){
+               LanGr[seq(j+1, nrow(LanGr), by = 1), ncol(LanGr)+1] = sapply(1:(nrow(LanGr)-j),
+                                                                     function(x){round(mean(LanGr[[i]][x:(x+j-1)]),3)})
+               colnames(LanGr)[ncol(LanGr)] = paste0(colnames(LanGr[i]), "_avg", j)
+          }
+          
+          feature_list[[k]] = LanGr
+          k = k+1 
+     }
+     col_list[[l]] = dplyr::bind_rows(feature_list)
+     l = l+1
+}
+```
+
+
+```{r}
+all_features <- col_list[[1]][, c(1:3, 11:13)]
+for (i in c(2:length(col_list))){
+        all_features <- dplyr::left_join(all_features, col_list[[i]][, -c(3:10)], by = c("Year", "Language"))
+}
+```
+
+
+```{r}
+# Save the dataset
+write_csv(all_features, "Data/all_features.csv")
+
+```
+
